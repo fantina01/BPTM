@@ -1,0 +1,475 @@
+# BPTM Research Platform
+# Launch with:
+# streamlit run bptm_platform.py
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+from scipy.stats import linregress
+import plotly.express as px
+
+st.set_page_config(page_title="BPTM Research Platform", layout="wide")
+
+st.title("BPTM Research Platform")
+
+QUESTION_MAP = {
+    "Q1": "Financial instability",
+    "Q2": "Basic survival insecurity",
+    "Q3": "Household stress",
+    "Q4": "Unexpected material disruption",
+    "Q5": "Daily unpredictability",
+    "Q6": "Behavioral inconsistency",
+    "Q7": "Plan disruption",
+    "Q8": "Emotional instability",
+    "Q9": "Effort-outcome confidence",
+    "Q10": "Perceived control",
+    "Q11": "Action-reward contingency",
+    "Q12": "Future influence expectation",
+    "Q13": "Motivational responsiveness",
+    "Q14": "Loss of interest tendency",
+    "Q15": "Reward emotional intensity",
+}
+
+st.sidebar.header("Controls")
+
+threshold = st.sidebar.slider(
+    "Threshold",
+    min_value=1.0,
+    max_value=5.0,
+    value=3.0,
+    step=0.1
+)
+
+uploaded = st.sidebar.file_uploader(
+    "Upload XLSX or CSV",
+    type=["xlsx", "csv"]
+)
+
+def calculate_vi(row):
+    vals = np.array([
+        row["Q5"],
+        row["Q6"],
+        row["Q7"],
+        row["Q8"]
+    ], dtype=float)
+
+    return np.mean(vals) + np.std(vals)
+
+def calculate_volatility_sd(row):
+    vals = np.array([
+        row["Q5"],
+        row["Q6"],
+        row["Q7"],
+        row["Q8"]
+    ], dtype=float)
+
+    return np.std(vals)
+
+def calculate_harshness(row):
+    vals = np.array([
+        row["Q1"],
+        row["Q2"],
+        row["Q3"],
+        row["Q4"]
+    ], dtype=float)
+
+    return np.mean(vals)
+
+def calculate_agency(row):
+    vals = np.array([
+        row["Q9"],
+        row["Q10"],
+        row["Q11"],
+        row["Q12"]
+    ], dtype=float)
+
+    return np.mean(vals)
+
+def calculate_isi(row):
+    return (
+        row["Q13"] +
+        (6 - row["Q14"]) +
+        row["Q15"]
+    ) / 3
+
+def calculate_learning_rate(row):
+    vi = row["VI"]
+    isi = row["ISI"]
+
+    if vi == 0:
+        return np.nan
+
+    return isi / vi
+
+def classify_state(vi):
+    if vi < threshold:
+        return "Adaptive"
+    else:
+        return "Numbness"
+
+if uploaded is not None:
+
+    if uploaded.name.endswith(".csv"):
+        df = pd.read_csv(uploaded)
+    else:
+        df = pd.read_excel(uploaded, sheet_name=0)
+
+        df = df.rename(columns={df.columns[0]: "Question"})
+
+        df = df.set_index("Question").transpose().reset_index(drop=True)
+
+        df = df.loc[:, df.columns.notna()]
+
+        df.columns = df.columns.astype(str).str.strip()
+
+        st.write(df.columns.tolist())
+
+    df["Harshness"] = df.apply(calculate_harshness, axis=1)
+    df["VI"] = df.apply(calculate_vi, axis=1)
+    df["VolatilitySD"] = df.apply(calculate_volatility_sd, axis=1)
+    df["Agency"] = df.apply(calculate_agency, axis=1)
+    df["ISI"] = df.apply(calculate_isi, axis=1)
+    df["LearningRate"] = df.apply(calculate_learning_rate, axis=1)
+    df["State"] = df["VI"].apply(classify_state)
+
+    st.subheader("Computed Variables")
+
+    st.dataframe(df)
+
+    st.subheader("Means")
+
+    means = pd.DataFrame({
+        "Metric": [
+            "Mean VI",
+            "Mean ISI",
+            "Mean Learning Rate",
+            "Mean Agency"
+        ],
+        "Value": [
+            df["VI"].mean(),
+            df["ISI"].mean(),
+            df["LearningRate"].mean(),
+            df["Agency"].mean()
+        ]
+    })
+
+    st.table(means)
+
+    adaptive = df[df["VI"] < threshold]
+    numb = df[df["VI"] >= threshold]
+
+    baseline = adaptive["ISI"].mean()
+    reduced = numb["ISI"].mean()
+
+    st.write("Adaptive ISI =", baseline)
+    st.write("Numbness ISI =", reduced)
+    st.write("Adaptive N =", len(adaptive))
+    st.write("Numbness N =", len(numb))
+
+    pad = ((baseline - reduced) / baseline) * 100
+
+    st.metric("PAD", f"{pad:.2f}%")
+    st.subheader("PAD Phase Visualization")
+
+    pad_df = pd.DataFrame({
+        "Category": [
+            "Preserved Motivation",
+            "Suppressed Motivation"
+        ],
+        "Percent": [
+            100 - pad,
+            pad
+        ]
+    })
+
+    fig_pad = px.bar(
+        pad_df,
+        x="Category",
+        y="Percent",
+        text="Percent",
+        title="Population Ambition Deficit"
+    )
+
+    st.plotly_chart(
+        fig_pad,
+        use_container_width=True
+    )
+    fig_pad.update_layout(
+        template="simple_white"
+    )
+
+    st.subheader("PAD Threshold Curve")
+
+    thresholds = np.arange(1.0, 5.0, 0.1)
+    pads = []
+
+    for t in thresholds:
+
+        a = df[df["VI"] < t]
+        n = df[df["VI"] >= t]
+
+        if len(a) > 0 and len(n) > 0:
+
+            base = a["ISI"].mean()
+            red = n["ISI"].mean()
+
+            p = ((base - red) / base) * 100
+
+        else:
+            p = np.nan
+
+        pads.append(p)
+
+    curve = pd.DataFrame({
+        "Threshold": thresholds,
+        "PAD": pads
+    })
+
+    fig_curve = px.line(
+        curve,
+        x="Threshold",
+        y="PAD",
+        title="PAD Across VI Thresholds"
+    )
+
+    fig_curve.update_layout(
+        template="simple_white"
+    )
+
+    st.plotly_chart(
+        fig_curve,
+        use_container_width=True
+    )
+
+    st.subheader("VI vs ISI Threshold Relationship")
+
+    fig_break = px.scatter(
+        df,
+        x="VI",
+        y="ISI",
+        color="State",
+        title="Volatility Index vs Incentive Sensitivity"
+    )
+
+    fig_break.add_vline(
+        x=threshold,
+        line_dash="dash"
+    )
+
+    st.plotly_chart(
+        fig_break,
+        use_container_width=True
+    )
+
+
+
+    st.subheader("Urban vs Village PAD")
+    st.write("Q17 values:")
+    st.write(df["Q17"].unique())
+
+    df["RegionType"] = df["Q17"].astype(str)
+
+    urban = df[
+        df["RegionType"].str.lower().isin(
+            ["shahar", "urban", "city"]
+        )
+    ]
+
+    village = df[
+        df["RegionType"].str.lower().isin(
+            ["qishloq", "village", "rural"]
+        )
+    ]
+
+    region_df = pd.DataFrame({
+        "Group": ["Urban", "Village"],
+        "Mean ISI": [
+            urban["ISI"].mean(),
+            village["ISI"].mean()
+        ]
+    })
+
+    fig_region = px.bar(
+        region_df,
+        x="Group",
+        y="Mean ISI",
+        title="Environmental Type vs Incentive Sensitivity"
+    )
+
+    fig_region.update_layout(
+        template="simple_white"
+    )
+
+    st.plotly_chart(fig_region, use_container_width=True)
+
+    reg_a = linregress(adaptive["VI"], adaptive["ISI"])
+    reg_n = linregress(numb["VI"], numb["ISI"])
+    # Piecewise prediction
+
+    df["PredictedISI"] = np.where(
+        df["VI"] < threshold,
+        reg_a.intercept + reg_a.slope * df["VI"],
+        reg_n.intercept + reg_n.slope * df["VI"]
+    )
+
+    df["Residual"] = df["ISI"] - df["PredictedISI"]
+
+    resilience_coeff = np.sqrt(
+        np.mean(df["Residual"] ** 2)
+    )
+
+    st.metric(
+        "Resilience Coefficient",
+        f"{resilience_coeff:.3f}"
+    )
+
+    reg = pd.DataFrame({
+        "Metric": [
+            "Adaptive slope",
+            "Adaptive R",
+            "Adaptive p",
+            "Numbness slope",
+            "Numbness R",
+            "Numbness p"
+        ],
+        "Value": [
+            reg_a.slope,
+            reg_a.rvalue,
+            reg_a.pvalue,
+            reg_n.slope,
+            reg_n.rvalue,
+            reg_n.pvalue
+        ]
+    })
+
+    st.subheader("Piecewise Regression")
+    st.table(reg)
+    st.subheader("Monte Carlo Population Projection")
+
+    runs = 1000
+    population_size = 10000
+
+    sim_pads = []
+
+    for _ in range(runs):
+
+        sim_df = df.sample(
+            n=population_size,
+            replace=True
+        )[["VI", "ISI"]]
+
+        a = sim_df[sim_df["VI"] < threshold]
+        n = sim_df[sim_df["VI"] >= threshold]
+
+        if len(a) > 0 and len(n) > 0:
+            base = a["ISI"].mean()
+            red = n["ISI"].mean()
+
+            pad_sim = (
+                              (base - red)
+                              / base
+                      ) * 100
+
+            sim_pads.append(pad_sim)
+    st.subheader("Interactive Graph")
+    mc_pad_mean = np.mean(sim_pads)
+    mc_pad_std = np.std(sim_pads)
+
+    mc_df = pd.DataFrame({
+        "Metric": [
+            "Observed PAD",
+            "Projected PAD",
+            "Monte Carlo SD"
+        ],
+        "Value": [
+            pad,
+            mc_pad_mean,
+            mc_pad_std
+        ]
+    })
+
+    st.table(mc_df)
+    fig_mc = px.histogram(
+        x=sim_pads,
+        nbins=40,
+        title="Monte Carlo PAD Distribution (N=10,000)"
+    )
+
+    st.plotly_chart(
+        fig_mc,
+        use_container_width=True
+    )
+
+    numeric = [
+        "Harshness",
+        "VI",
+        "VolatilitySD",
+        "Agency",
+        "ISI",
+        "LearningRate"
+    ]
+
+    x = st.selectbox("X", numeric, index=1)
+    y = st.selectbox("Y", numeric, index=3)
+
+    hover = ["ParticipantID"] if "ParticipantID" in df.columns else None
+
+    fig = px.scatter(
+        df,
+        x=x,
+        y=y,
+        color="State",
+        hover_data=hover,
+        title=f"{x} vs {y}"
+    )
+
+
+    fig.add_vline(x=threshold)
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Predictive Simulation")
+
+    sim_vi = st.slider("Simulated UI", 1.0, 5.0, 3.0, 0.1)
+    sim_h = st.slider("Simulated Harshness", 1.0, 5.0, 3.0, 0.1)
+    sim_ag = st.slider("Simulated Agency", 1.0, 5.0, 3.0, 0.1)
+    if sim_vi < threshold:
+
+        pred_isi = (
+                reg_a.intercept +
+                reg_a.slope * sim_vi
+        )
+
+    else:
+
+        pred_isi = (
+                reg_n.intercept +
+                reg_n.slope * sim_vi
+        )
+    pred_alpha = pred_isi / max(sim_vi, 0.1)
+    pred_alpha = pred_isi / max(sim_vi, 0.1)
+
+    pred_df = pd.DataFrame({
+        "Metric": [
+            "Predicted ISI",
+            "Predicted Alpha"
+        ],
+        "Value": [
+            pred_isi,
+            pred_alpha
+        ]
+    })
+
+    st.table(pred_df)
+
+    csv = df.to_csv(index=False)
+
+    st.download_button(
+        "Download Results",
+        csv,
+        "bptm_results.csv",
+        "text/csv"
+    )
+
+else:
+    st.info("Upload a spreadsheet to begin.")
